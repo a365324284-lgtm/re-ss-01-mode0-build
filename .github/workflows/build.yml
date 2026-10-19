@@ -1,0 +1,65 @@
+name: RE-SS-01 experimental Mode 0
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: re-ss-01-experimental-build
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev python3 python3-setuptools rsync swig unzip zlib1g-dev file wget curl libelf-dev device-tree-compiler
+          df -h .
+      - name: Fetch fixed OpenWrt source
+        run: |
+          git init openwrt
+          git -C openwrt remote add origin https://github.com/openwrt/openwrt.git
+          git -C openwrt fetch --depth 1 origin c4fbb6337a693864f422c018b7bf470d2ea7cfff
+          git -C openwrt checkout --detach FETCH_HEAD
+          cp feeds.lock openwrt/feeds.conf.default
+          python3 scripts/prepare.py openwrt
+          git -C openwrt diff --check
+          mkdir -p results
+          git -C openwrt diff > results/source-changes.patch
+          git -C openwrt rev-parse HEAD > results/source-commit.txt
+          cp README.txt results/EXPERIMENTAL-READ-FIRST.txt
+      - name: Configure single device
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          cp ../config.seed .config
+          make defconfig
+          grep -q '^CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y$' .config
+          cp .config ../results/build.config
+          ./scripts/diffconfig.sh > ../results/diffconfig
+      - name: Download sources
+        working-directory: openwrt
+        run: |
+          set -o pipefail
+          make download -j4 V=s 2>&1 | tee ../results/download.log
+      - name: Build firmware
+        working-directory: openwrt
+        run: |
+          set -o pipefail
+          make -j2 V=s 2>&1 | tee ../results/build.log
+      - name: Verify embedded device tree and collect firmware
+        run: |
+          python3 scripts/verify.py openwrt/bin/targets/qualcommax/ipq60xx results
+          cd results
+          sha256sum *.bin > SHA256SUMS
+      - name: Upload results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: RE-SS-01-MODE0-EXPERIMENTAL-${{ github.run_number }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 14
